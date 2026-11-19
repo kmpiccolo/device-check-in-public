@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="robots" content="noindex, nofollow">
+<title>Device Check-In</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f2f2f7; color: #111; }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 24px; margin: 8px 0 4px; }
+  h2 { font-size: 18px; margin: 20px 0 8px; }
+  p { margin: 6px 0; line-height: 1.45; }
+  .muted { color: #666; font-size: 14px; }
+  .card { background: #fff; border-radius: 14px; padding: 16px; margin: 12px 0; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .btn { display: block; width: 100%; padding: 16px; font-size: 18px; font-weight: 700; border: none; border-radius: 12px; background: #007aff; color: #fff; margin: 10px 0; cursor: pointer; }
+  .btn:active { opacity: .75; }
+  .btn.green { background: #34c759; }
+  .btn.red { background: #ff3b30; }
+  .btn.gray { background: #8e8e93; }
+  .btn.orange { background: #ff9500; }
+  .btn.small { width: auto; display: inline-block; padding: 10px 16px; font-size: 16px; margin: 4px 6px 4px 0; }
+  .btn:disabled { opacity: .45; }
+  input[type="text"], input[type="number"], input[type="password"] { width: 100%; padding: 14px; font-size: 18px; border: 1px solid #ccc; border-radius: 10px; margin: 6px 0; }
+  .pin-dots { font-size: 34px; letter-spacing: 12px; text-align: center; margin: 14px 0; min-height: 44px; }
+  .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 320px; margin: 0 auto; }
+  .keypad button { padding: 18px 0; font-size: 24px; border-radius: 12px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+  .keypad button:active { background: #e5e5ea; }
+  .banner { border-radius: 12px; padding: 14px; margin: 12px 0; font-size: 17px; font-weight: 600; }
+  .banner.warn { background: #fff3cd; color: #664d03; border: 1px solid #ffda6a; }
+  .banner.alarm { background: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
+  .banner.panic { background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+  .banner.info { background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; }
+  .big-timer { font-size: 44px; font-weight: 800; text-align: center; margin: 8px 0; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .tag { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 13px; font-weight: 700; background: #e5e5ea; }
+  .tag.live { background: #34c759; color: #fff; }
+  .tag.over { background: #ff3b30; color: #fff; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  td, th { padding: 8px 4px; border-bottom: 1px solid #eee; text-align: left; }
+  th { color: #666; font-weight: 600; }
+  .alert-item { padding: 10px 0; border-bottom: 1px solid #eee; font-size: 15px; }
+  .alert-item .t { color: #666; font-size: 13px; }
+  #scanner { position: fixed; inset: 0; background: #000; z-index: 50; display: none; flex-direction: column; }
+  #scanner video { width: 100%; flex: 1; object-fit: cover; }
+  #scanner .scan-bar { background: #000; color: #fff; padding: 16px; text-align: center; }
+  .label-card { text-align: center; border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin: 12px 0; background: #fff; }
+  .label-card canvas { max-width: 220px; width: 100%; height: auto; }
+  .hidden { display: none !important; }
+  .err { color: #d00; font-weight: 600; text-align: center; min-height: 22px; }
+  @media print { body * { visibility: hidden; } .label-card, .label-card * { visibility: visible; } .label-card { position: absolute; inset: 0; border: none; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div id="view-root"></div>
+</div>
+
+<!-- Scanner overlay -->
+<div id="scanner">
+  <video id="scan-video" playsinline muted></video>
+  <div class="scan-bar">
+    <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Point the camera at the device's QR label</div>
+    <div class="muted" style="color:#bbb;">The timer starts when the code is read.</div>
+    <div style="margin-top:12px;">
+      <button class="btn gray small" id="scan-photo-btn" type="button">Take a photo of the label instead</button>
+      <button class="btn red small" id="scan-close-btn" type="button">Cancel</button>
+    </div>
+    <input type="file" id="scan-file" accept="image/*" capture="environment" class="hidden">
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============ helpers ============ */
+const $ = s => document.querySelector(s);
+const root = document.getElementById('view-root');
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtClock(mins){ if(mins==null) return ''; let h=Math.floor(mins/60), m=mins%60; const ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; }
+function fmtDur(mins){ mins=Math.max(0,Math.round(mins)); const h=Math.floor(mins/60), m=mins%60; return h>0 ? h+'h '+m+'m' : m+' min'; }
+function timeAgo(iso){ const s=Math.max(0,Math.floor((Date.now()-new Date(iso))/1000)); if(s<60) return 'just now'; const m=Math.floor(s/60); if(m<60) return m+' min ago'; const h=Math.floor(m/60); if(h<24) return h+' hr ago'; return Math.floor(h/24)+' d ago'; }
+function tokenKey(){ return view.kid ? 'dci_kid_'+view.kid+'_token' : 'dci_parent_token'; }
+function getToken(){ try { return localStorage.getItem(tokenKey()); } catch(_){ return null; } }
+function setToken(t){ try { localStorage.setItem(tokenKey(), t); } catch(_){} }
+function clearToken(){ try { localStorage.removeItem(tokenKey()); } catch(_){} }
+
+/* ============ view / routing ============ */
+const params = new URLSearchParams(location.search);
+const view = { kid: params.get('kid') || null, parent: params.get('view') === 'parent' };
+if (!view.kid && !view.parent) view.chooser = true;
+let state = null;         // last /api/state
+let authed = false;       // PIN verified this load (token present + state fetch ok)
+let pollTimer = null;
+let seenAlertIds = new Set();
+let audioCtx = null;
+let warned10 = {}, warned5 = {};   // sessionId -> true
+let alarmTimer = null, panicTimer = null;
+let notifPermAsked = false;
+
+function api(path, opts){
+  opts = opts || {};
+  const headers = { 'Content-Type': 'application/json' };
+  const t = getToken();
+  if (t) headers['Authorization'] = 'Bearer ' + t;
+  return fetch(path, Object.assign({ headers }, opts)).then(r => r.json());
+}
+function apiState(){
+  return api('/api/state').then(s => {
+    if (s && s.ok) { state = s; authed = true; return s; }
+    authed = false; clearToken(); return null;
+  }).catch(() => null);
+}
+
+/* ============ audio ============ */
+function ac(){
+  if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(_) { return null; } }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function beep(freq, dur, when){
+  const ctx = ac(); if (!ctx) return;
+  const t = ctx.currentTime + (when || 0);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = 'sine'; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.5, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(ctx.destination);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+function oneBeep(){ beep(880, 0.35, 0); }
+function twoBeeps(){ beep(880, 0.3, 0); beep(880, 0.3, 0.45); }
+function alarmSound(){ // time-up alarm: harsh two-tone
+  beep(660, 0.5, 0); beep(440, 0.5, 0.55);
+}
+function panicSound(){ // parent-call siren: distinct, faster
+  beep(1200, 0.25, 0); beep(900, 0.25, 0.3); beep(1200, 0.25, 0.6);
+}
+function startAlarmLoop(){ if (alarmTimer) return; alarmTimer = setInterval(alarmSound, 1100); alarmSound(); }
+function stopAlarmLoop(){ if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; } }
+function startPanicLoop(){ if (panicTimer) return; panicTimer = setInterval(panicSound, 900); panicSound(); }
+function stopPanicLoop(){ if (panicTimer) { clearInterval(panicTimer); panicTimer = null; } }
+
+/* ============ PIN gate ============ */
+function renderPinGate(){
+  const who = view.parent ? 'Parent' : view.kid;
+  const title = view.parent ? 'Parent dashboard' : who + ' — check in';
+  root.innerHTML =
+    '<h1>Device Check-In</h1>' +
+    '<div class="card"><h2 style="margin-top:0;">' + esc(title) + '</h2>' +
+    '<p class="muted">Enter your 4-digit PIN to continue.</p>' +
+    '<div class="pin-dots" id="pin-dots"></div>' +
+    '<div class="err" id="pin-err"></div>' +
+    '<div class="keypad" id="pin-pad"></div>' +
+    '<p class="muted" style="text-align:center;margin-top:14px;">Your PIN is remembered on this phone.</p></div>' +
+    (view.chooser ? '' : '<p style="text-align:center;"><a href="./">← Back</a></p>');
+  let pin = '';
+  const dots = document.getElementById('pin-dots');
+  const err = document.getElementById('pin-err');
+  function draw(){ dots.textContent = '•'.repeat(pin.length) + '○'.repeat(Math.max(0, 4 - pin.length)); }
+  draw();
+  const pad = document.getElementById('pin-pad');
+  ['1','2','3','4','5','6','7','8','9','C','0','⌫'].forEach(k => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = k;
+    b.onclick = () => {
+      if (k === 'C') { pin = ''; err.textContent = ''; }
+      else if (k === '⌫') { pin = pin.slice(0, -1); }
+      else if (pin.length < 4) { pin += k; }
+      draw();
+      if (pin.length === 4) submitPin();
+    };
+    pad.appendChild(b);
+  });
+  function submitPin(){
+    const body = view.parent ? { role: 'parent', pin } : { role: 'kid', kid: view.kid, pin };
+    api('/api/verify-pin', { method: 'POST', body: JSON.stringify(body) }).then(r => {
+      if (r && r.ok) { setToken(r.token); enterApp(); }
+      else { err.textContent = (r && r.error) || 'Wrong PIN'; pin = ''; draw(); }
+    }).catch(() => { err.textContent = 'Could not reach the server — check your connection.'; pin = ''; draw(); });
+  }
+}
+
+/* ============ chooser ============ */
+function renderChooser(){
+  root.innerHTML =
+    '<h1>Device Check-In</h1>' +
+    '<p class="muted">Pick who you are. Each kid uses their own PIN; parents use the parent PIN.</p>' +
+    '<a class="btn" href="?view=parent" style="text-decoration:none;text-align:center;">Parent dashboard</a>' +
+    '<a class="btn green" href="?kid=Ale" style="text-decoration:none;text-align:center;">Ale</a>' +
+    '<a class="btn green" href="?kid=Leo" style="text-decoration:none;text-align:center;">Leo</a>' +
+    '<a class="btn green" href="?kid=Gio" style="text-decoration:none;text-align:center;">Gio</a>' +
+    '<p class="muted">Scan a device QR label to start a session. Tap “Check in” to end it. Sessions are never ended automatically.</p>';
+}
+
+/* ============ kid view ============ */
+function timeLeftMinutes(s){
+  // minutes left before whichever end comes first: daily limit or curfew
+  const now = new Date();
+  const dev = state.devices.find(d => d.id === s.deviceId) || state.allDevices.find(d => d.id === s.deviceId);
+  if (!dev) return 0;
+  let left = dev.dailyLimitMinutes - dev.todayMinutes; // todayMinutes includes this session's elapsed
+  const cur = state.curfews.find(c => c.kid === s.kid);
+  if (cur && cur.cutoffMinutes != null) {
+    const nowMin = (new Date().getHours() * 60 + new Date().getMinutes()); // local; server uses ET — close enough for display, server enforces
+    const curLeft = cur.cutoffMinutes - nowMin;
+    left = Math.min(left, curLeft);
+  }
+  return left;
+}
+function renderKid(){
+  const kid = view.kid;
+  const totals = (state.kidTotals || []).find(t => t.kid === kid) || { todayMinutes: 0, weekMinutes: 0 };
+  const myActive = (state.active || []).find(s => s.kid === kid);
+  const cur = (state.curfews || []).find(c => c.kid === kid);
+  let html = '<h1>Hi, ' + esc(kid) + '</h1>';
+  html += '<p class="muted">Today: <b>' + fmtDur(totals.todayMinutes) + '</b> &nbsp;·&nbsp; This week: <b>' + fmtDur(totals.weekMinutes) + '</b>' +
+    (cur && cur.cutoffLabel ? ' &nbsp;·&nbsp; Curfew ' + esc(cur.cutoffLabel) : '') + '</p>';
+  html += '<div id="kid-banners"></div>';
+  if (myActive) {
+    const left = timeLeftMinutes(myActive);
+    const elapsed = myActive.elapsedMinutes || 0;
+    html += '<div class="card"><div class="row"><b style="font-size:19px;">' + esc(myActive.deviceName) + '</b><span class="tag live">IN USE</span></div>' +
+      '<div class="big-timer" id="kid-timer">' + fmtDur(elapsed) + '</div>' +
+      '<p style="text-align:center;" class="muted">Time left: <b id="kid-left">' + fmtDur(left) + '</b></p>' +
+      '<button class="btn green" id="kid-checkin" type="button">Check in — end session</button>' +
+      '<p class="muted" style="text-align:center;">Checking in ends the session and records the time.</p></div>';
+  } else {
+    html += '<div class="card"><h2 style="margin-top:0;">Start a session</h2>' +
+      '<p>Scan the QR label on the device to start. The timer starts at the scan.</p>' +
+      '<button class="btn" id="kid-scan" type="button">Scan a device QR code</button>' +
+      '<p class="muted">Limits today: ' + state.devices.map(d => esc(d.name) + ' ' + d.dailyLimitMinutes + ' min').join(' · ') + '</p></div>';
+  }
+  html += '<div class="card"><h2 style="margin-top:0;">Today on your devices</h2><table>' +
+    state.devices.map(d => '<tr><td>' + esc(d.name) + '</td><td>' + d.todayMinutes + ' / ' + d.dailyLimitMinutes + ' min</td><td>' + (d.todayMinutes >= d.dailyLimitMinutes ? '<span class="tag over">LIMIT USED</span>' : '') + '</td></tr>').join('') +
+    '</table></div>';
+  html += '<div class="card"><h2 style="margin-top:0;">Recent sessions</h2>' +
+    ((state.recent || []).length ? (state.recent || []).slice(0, 8).map(s => '<div class="alert-item">' + esc(s.deviceName) + ' — ' + fmtDur(s.minutes) + ' <span class="t">· ' + timeAgo(s.startedAt) + ' · ' + esc(s.status) + '</span></div>').join('') : '<p class="muted">No sessions yet.</p>') + '</div>';
+  html += '<p style="text-align:center;"><button class="btn gray small" id="kid-logout" type="button">Switch kid / log out</button></p>';
+  root.innerHTML = html;
+
+  const scanBtn = document.getElementById('kid-scan');
+  if (scanBtn) scanBtn.onclick = () => { ac(); openScanner(); };
+  const ci = document.getElementById('kid-checkin');
+  if (ci) ci.onclick = () => doCheckin(myActive.id);
+  document.getElementById('kid-logout').onclick = () => { clearToken(); location.href = './'; };
+  updateKidBanners();
+}
+function updateKidBanners(){
+  const box = document.getElementById('kid-banners');
+  if (!box || !state) return;
+  const myActive = (state.active || []).find(s => s.kid === view.kid);
+  let html = '';
+  if (myActive) {
+    const left = timeLeftMinutes(myActive);
+    // warnings (fire once per session)
+    if (left <= 10 && left > 5 && !warned10[myActive.id]) { warned10[myActive.id] = true; oneBeep(); }
+    if (left <= 5 && left > 0 && !warned5[myActive.id]) { warned5[myActive.id] = true; twoBeeps(); }
+    if (left <= 10 && left > 5) html += '<div class="banner warn">10 minutes left on ' + esc(myActive.deviceName) + '.</div>';
+    if (left <= 5 && left > 0) html += '<div class="banner warn">5 minutes left on ' + esc(myActive.deviceName) + '.</div>';
+    if (left <= 0) {
+      html += '<div class="banner alarm">Time is up on ' + esc(myActive.deviceName) + '. Please check in now.</div>';
+      startAlarmLoop();
+    } else {
+      stopAlarmLoop();
+    }
+    if (myActive.panicAt) {
+      html += '<div class="banner panic">Your parent is calling you — please check in now. <button class="btn small" id="panic-silence" type="button">Silence alarm</button></div>';
+      startPanicLoop();
+      setTimeout(() => { const b = document.getElementById('panic-silence'); if (b) b.onclick = () => { stopPanicLoop(); document.getElementById('kid-banners').querySelector('.banner.panic')?.remove(); }; }, 0);
+    } else {
+      stopPanicLoop();
+    }
+  } else { stopAlarmLoop(); stopPanicLoop(); }
+  // keep panic banner if present but session ended: clear it
+  box.innerHTML = html;
+}
+function doCheckin(sessionId){
+  api('/api/checkin', { method: 'POST', body: JSON.stringify({ sessionId }) }).then(r => {
+    stopAlarmLoop(); stopPanicLoop();
+    if (r && r.ok) { refresh(); }
+    else alert((r && r.error) || 'Could not check in');
+  }).catch(() => alert('Could not reach the server.'));
+}
+
+/* ============ QR scanner ============ */
+let scanStream = null, scanRaf = null, scanCanvas = null, scanCtx = null;
+function openScanner(){
+  const ov = document.getElementById('scanner');
+  ov.style.display = 'flex';
+  const video = document.getElementById('scan-video');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Camera is not available in this browser. Use the photo button instead.');
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }).then(stream => {
+    scanStream = stream;
+    video.srcObject = stream;
+    video.play();
+    if (!scanCanvas) { scanCanvas = document.createElement('canvas'); scanCtx = scanCanvas.getContext('2d'); }
+    const loop = () => {
+      if (!scanStream) return;
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        scanCanvas.width = video.videoWidth; scanCanvas.height = video.videoHeight;
+        scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+        const img = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+        const code = window.jsQR ? jsQR(img.data, img.width, img.height) : null;
+        if (code && code.data) { closeScanner(); startSessionFromCode(code.data.trim()); return; }
+      }
+      scanRaf = requestAnimationFrame(loop);
+    };
+    loop();
+  }).catch(() => { alert('Could not open the camera. Use the photo button instead.'); });
+}
+function closeScanner(){
+  if (scanRaf) cancelAnimationFrame(scanRaf);
+  scanRaf = null;
+  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+  document.getElementById('scanner').style.display = 'none';
+}
+document.getElementById('scan-close-btn').onclick = closeScanner;
+document.getElementById('scan-photo-btn').onclick = () => document.getElementById('scan-file').click();
+document.getElementById('scan-file').addEventListener('change', (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const x = c.getContext('2d');
+    x.drawImage(img, 0, 0);
+    const data = x.getImageData(0, 0, c.width, c.height);
+    const code = window.jsQR ? jsQR(data.data, data.width, data.height) : null;
+    closeScanner();
+    if (code && code.data) startSessionFromCode(code.data.trim());
+    else alert('No QR code found in that photo. Try again, closer and in good light.');
+    e.target.value = '';
+  };
+  img.onerror = () => { closeScanner(); alert('Could not read that photo.'); };
+  img.src = URL.createObjectURL(f);
+});
+function startSessionFromCode(code){
+  api('/api/startsession', { method: 'POST', body: JSON.stringify({ deviceCode: code }) }).then(r => {
+    if (r && r.ok) { refresh(); }
+    else alert((r && r.error) || 'Could not start a session');
+  }).catch(() => alert('Could not reach the server.'));
+}
+/* ============ parent view ============ */
+function renderParent(){
+  let html = '<h1>Parent dashboard</h1>';
+  html += '<p class="muted">Live view. Updates every few seconds. ' +
+    'Notifications arrive while this page is open (background / screen off is fine). ' +
+    'If the page is fully closed, alerts are still recorded on the server and appear here when you open it.</p>';
+  html += '<div id="parent-banners"></div>';
+  // live sessions
+  const act = state.active || [];
+  html += '<div class="card"><h2 style="margin-top:0;">Live sessions (' + act.length + ')</h2>';
+  if (!act.length) html += '<p class="muted">No active sessions.</p>';
+  act.forEach(s => {
+    html += '<div class="alert-item"><div class="row"><span><b>' + esc(s.kid) + '</b> — ' + esc(s.deviceName) + ' · ' + fmtDur(s.elapsedMinutes) + '</span><span class="tag live">LIVE</span></div>' +
+      '<div style="margin-top:8px;"><button class="btn orange small" data-panic="' + s.id + '" type="button">Panic — call ' + esc(s.kid) + '</button></div></div>';
+  });
+  html += '</div>';
+  // alerts
+  html += '<div class="card"><h2 style="margin-top:0;">Alerts</h2>';
+  const alerts = state.alerts || [];
+  if (!alerts.length) html += '<p class="muted">No alerts yet.</p>';
+  alerts.slice(0, 20).forEach(a => {
+    html += '<div class="alert-item">' + esc(a.detail) + ' <span class="t">· ' + timeAgo(a.createdAt) + '</span></div>';
+  });
+  html += '</div>';
+  // totals
+  html += '<div class="card"><h2 style="margin-top:0;">Time by device (today)</h2><table><tr><th>Device</th><th>Used / Limit</th><th></th></tr>' +
+    state.allDevices.map(d => '<tr><td>' + esc(d.name) + '</td><td>' + d.todayMinutes + ' / ' + d.dailyLimitMinutes + ' min</td><td>' + (d.todayMinutes >= d.dailyLimitMinutes ? '<span class="tag over">LIMIT USED</span>' : '') + '</td></tr>').join('') +
+    '</table></div>';
+  html += '<div class="card"><h2 style="margin-top:0;">Time by kid</h2><table><tr><th>Kid</th><th>Today</th><th>Week</th><th></th></tr>' +
+    (state.kidTotals || []).map(t => '<tr><td>' + esc(t.kid) + '</td><td>' + fmtDur(t.todayMinutes) + '</td><td>' + fmtDur(t.weekMinutes) + '</td><td><button class="btn gray small" data-clear-kid="' + esc(t.kid) + '" type="button">Clear time</button></td></tr>').join('') +
+    '</table><button class="btn red" id="clear-all" type="button">Clear all kids’ time</button></div>';
+  // limits
+  html += '<div class="card"><h2 style="margin-top:0;">Daily limits</h2>' +
+    state.allDevices.map(d => '<div class="row"><label for="lim-' + d.id + '">' + esc(d.name) + '</label><span><input type="number" id="lim-' + d.id + '" value="' + d.dailyLimitMinutes + '" min="5" max="600" style="width:90px;display:inline-block;"> min</span></div>').join('') +
+    '<button class="btn" id="save-limits" type="button">Save limits</button></div>';
+  // parent PIN
+  html += '<div class="card"><h2 style="margin-top:0;">Parent PIN</h2><p class="muted">Change the PIN that opens this dashboard.</p>' +
+    '<input type="password" id="pin-old" placeholder="Current PIN" inputmode="numeric" maxlength="4">' +
+    '<input type="password" id="pin-new" placeholder="New 4-digit PIN" inputmode="numeric" maxlength="4">' +
+    '<button class="btn" id="save-pin" type="button">Change parent PIN</button><div class="err" id="pin-change-err"></div></div>';
+  // labels
+  html += '<div class="card"><h2 style="margin-top:0;">QR labels — print &amp; stick on each device</h2>' +
+    '<p class="muted">Each label encodes that device’s code. The kid scans it to start.</p><div id="labels"></div></div>';
+  // recent
+  html += '<div class="card"><h2 style="margin-top:0;">Recent sessions</h2>' +
+    ((state.recent || []).length ? (state.recent || []).slice(0, 15).map(s => '<div class="alert-item"><b>' + esc(s.kid) + '</b> — ' + esc(s.deviceName) + ' · ' + fmtDur(s.minutes) + ' <span class="t">· ' + timeAgo(s.startedAt) + ' · ' + esc(s.status) + '</span></div>').join('') : '<p class="muted">No sessions yet.</p>') + '</div>';
+  html += '<p style="text-align:center;"><button class="btn gray small" id="parent-logout" type="button">Log out</button></p>';
+  root.innerHTML = html;
+
+  root.querySelectorAll('[data-panic]').forEach(b => b.onclick = () => {
+    if (!confirm('Sound the parent-call alarm on ' + b.textContent.replace('Panic — call ', '') + '’s phone?')) return;
+    api('/api/panicsession', { method: 'POST', body: JSON.stringify({ sessionId: parseInt(b.getAttribute('data-panic'), 10) }) }).then(() => refresh());
+  });
+  root.querySelectorAll('[data-clear-kid]').forEach(b => b.onclick = () => {
+    const kid = b.getAttribute('data-clear-kid');
+    if (!confirm('Clear all of ' + kid + '’s recorded time? This deletes their sessions and resets their totals to zero.')) return;
+    api('/api/clearkidtime', { method: 'POST', body: JSON.stringify({ kids: [kid] }) }).then(r => { if (r && r.ok) refresh(); else alert((r && r.error) || 'Could not clear'); });
+  });
+  document.getElementById('clear-all').onclick = () => {
+    if (!confirm('Clear ALL kids’ recorded time? This deletes every session and resets all totals to zero.')) return;
+    api('/api/clearkidtime', { method: 'POST', body: JSON.stringify({ kids: ['Ale', 'Leo', 'Gio'] }) }).then(r => { if (r && r.ok) refresh(); else alert((r && r.error) || 'Could not clear'); });
+  };
+  document.getElementById('save-limits').onclick = () => {
+    const jobs = state.allDevices.map(d => {
+      const v = parseInt(document.getElementById('lim-' + d.id).value, 10);
+      if (v !== d.dailyLimitMinutes) return api('/api/setdailylimit', { method: 'POST', body: JSON.stringify({ deviceId: d.id, minutes: v }) });
+      return Promise.resolve({ ok: true });
+    });
+    Promise.all(jobs).then(() => refresh());
+  };
+  document.getElementById('save-pin').onclick = () => {
+    const oldPin = document.getElementById('pin-old').value;
+    const newPin = document.getElementById('pin-new').value;
+    const err = document.getElementById('pin-change-err');
+    api('/api/setparentpin', { method: 'POST', body: JSON.stringify({ oldPin, newPin }) }).then(r => {
+      if (r && r.ok) { err.textContent = ''; alert('Parent PIN changed.'); document.getElementById('pin-old').value = ''; document.getElementById('pin-new').value = ''; }
+      else err.textContent = (r && r.error) || 'Could not change PIN';
+    });
+  };
+  document.getElementById('parent-logout').onclick = () => { clearToken(); location.href = './'; };
+  renderLabels();
+  updateParentBanners();
+  maybeAskNotif();
+}
+function renderLabels(){
+  const box = document.getElementById('labels');
+  if (!box || !window.QRCode) { if (box) box.innerHTML = '<p class="muted">QR library did not load — check your connection and reload.</p>'; return; }
+  box.innerHTML = '';
+  state.allDevices.forEach(d => {
+    const div = document.createElement('div');
+    div.className = 'label-card';
+    div.innerHTML = '<div style="font-size:22px;font-weight:800;">' + esc(d.name) + '</div>' +
+      '<div class="muted">Scan to start a session</div>' +
+      '<div><canvas></canvas></div>' +
+      '<div style="font-size:18px;font-weight:700;letter-spacing:1px;">' + esc(d.code) + '</div>' +
+      '<div style="margin-top:10px;"><button class="btn small" type="button">Download label</button> ' +
+      '<button class="btn gray small" type="button">Print</button></div>';
+    const canvas = div.querySelector('canvas');
+    QRCode.toCanvas(canvas, d.code, { width: 220, margin: 1 }, () => {});
+    const [dl, pr] = div.querySelectorAll('button');
+    dl.onclick = () => {
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = d.code + '-label.png';
+      a.click();
+    };
+    pr.onclick = () => window.print();
+    box.appendChild(div);
+  });
+}
+function updateParentBanners(){
+  const box = document.getElementById('parent-banners');
+  if (!box || !state) return;
+  const overdue = (state.alerts || []).filter(a => a.kind === 'overdue').slice(0, 3);
+  box.innerHTML = overdue.map(a => '<div class="banner alarm">' + esc(a.detail) + '</div>').join('');
+}
+function maybeAskNotif(){
+  if (notifPermAsked) return;
+  notifPermAsked = true;
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+function fireParentNotif(alert){
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification('Device Check-In', { body: alert.detail }); } catch (_) {}
+  }
+  // in-app sound + banner (updateParentBanners renders it on next poll)
+  twoBeeps();
+}
+function checkNewAlerts(){
+  if (!state || view.parent !== true) return;
+  (state.alerts || []).forEach(a => {
+    if (a.kind === 'overdue' && !seenAlertIds.has(a.id)) {
+      seenAlertIds.add(a.id);
+      fireParentNotif(a);
+    }
+  });
+}
+
+/* ============ bootstrap / polling ============ */
+function render(){
+  if (!authed || !state) { renderPinGate(); return; }
+  if (view.parent) renderParent();
+  else if (view.kid) renderKid();
+  else renderChooser();
+}
+function refresh(){
+  return apiState().then(s => {
+    if (!s) { renderPinGate(); return; }
+    if (view.parent) { checkNewAlerts(); renderParent(); }
+    else if (view.kid) { renderKid(); }
+    else renderChooser();
+  });
+}
+function enterApp(){
+  // after PIN verify: load state, then start polling
+  refresh();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(() => {
+    if (!authed) return;
+    apiState().then(s => {
+      if (!s) { renderPinGate(); return; }
+      if (view.parent) { checkNewAlerts(); updateParentBanners(); renderParent(); }
+      else if (view.kid) { renderKid(); }
+    });
+  }, 5000);
+}
+function init(){
+  if (view.chooser) { renderChooser(); return; }
+  // kid or parent view: try stored token, else PIN gate
+  if (getToken()) {
+    apiState().then(s => {
+      if (s) { enterApp(); }
+      else renderPinGate();
+    });
+  } else {
+    renderPinGate();
+  }
+}
+init();
+
+
+</script>
+</body>
+</html>
