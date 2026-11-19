@@ -54,9 +54,9 @@ function defaultData() {
       { id: 3, name: "Ale's Laptop", code: 'ale-s-laptop-qk2t', kind: 'laptop', dailyLimitMinutes: 90, archived: false }
     ],
     kids: [
-      { name: 'Ale', pinHash: sha256('1111'), curfewMinutes: 1320 },
-      { name: 'Leo', pinHash: sha256('2222'), curfewMinutes: 1260 },
-      { name: 'Gio', pinHash: sha256('3333'), curfewMinutes: null }
+      { name: 'Ale', pinHash: sha256('1111'), curfewMinutes: 1320, dailyTotalLimitMinutes: 90 },
+      { name: 'Leo', pinHash: sha256('2222'), curfewMinutes: 1260, dailyTotalLimitMinutes: 90 },
+      { name: 'Gio', pinHash: sha256('3333'), curfewMinutes: null, dailyTotalLimitMinutes: null }
     ],
     parentPinHash: sha256('0000'),
     sessions: [],
@@ -66,6 +66,20 @@ function defaultData() {
     nextAlertId: 1
   };
 }
+// Per-kid daily total cap defaults (minutes across all devices). Used for new
+// state AND to migrate older stored state that lacks the field.
+const KID_TOTAL_DEFAULTS = { Ale: 90, Leo: 90, Gio: null };
+function normalizeKidTotals() {
+  if (!data || !Array.isArray(data.kids)) return false;
+  let changed = false;
+  for (const k of data.kids) {
+    if (k.dailyTotalLimitMinutes === undefined) {
+      k.dailyTotalLimitMinutes = (k.name in KID_TOTAL_DEFAULTS) ? KID_TOTAL_DEFAULTS[k.name] : null;
+      changed = true;
+    }
+  }
+  return changed;
+}
 let data = null;
 function loadData() {
   try {
@@ -74,6 +88,7 @@ function loadData() {
     data = defaultData();
     try { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)); } catch (_) {}
   }
+  if (normalizeKidTotals()) saveData();
   return data;
 }
 // serialize writes so concurrent requests don't clobber the store
@@ -120,6 +135,7 @@ async function initStore() {
         await pgPool.query('INSERT INTO app_state (id, state) VALUES (1, $1::jsonb)', [JSON.stringify(data)]);
       }
       useDb = true;
+      if (normalizeKidTotals()) await saveData();
       console.log('State store: Postgres (DATABASE_URL) — history survives restarts');
       return;
     } catch (e) {
@@ -191,11 +207,22 @@ function runOverdueCheck(now) {
     const totalToday = deviceTodayMinutes(dev.id, now);
     const overMin = totalToday - dev.dailyLimitMinutes;
     const pastCurfew = kid && kid.curfewMinutes != null && etMinutes(now) >= kid.curfewMinutes;
-    if (overMin < 0 && !pastCurfew) continue;
+    // kid daily total across ALL devices (e.g. Ale capped at 90 min total)
+    let totalOverMin = null;
+    if (kid && kid.dailyTotalLimitMinutes != null) {
+      totalOverMin = kidTodayMinutes(kid.name, now) - kid.dailyTotalLimitMinutes;
+    }
+    const overDevice = overMin >= 0;
+    const overTotal = totalOverMin != null && totalOverMin >= 0;
+    if (!overDevice && !overTotal && !pastCurfew) continue;
     // dedupe: one overdue alert per session
     if (data.alerts.some(a => a.kind === 'overdue' && a.sessionId === s.id)) continue;
     let detail;
-    if (overMin >= 0 && pastCurfew) {
+    if (overTotal) {
+      detail = s.kid + " is " + totalOverMin + " min over today's " + kid.dailyTotalLimitMinutes + "-minute total";
+      if (overDevice) detail += " (" + dev.name + " also " + overMin + " min over its " + dev.dailyLimitMinutes + "-minute limit)";
+      if (pastCurfew) detail += " and past curfew (" + fmtClock(kid.curfewMinutes) + ")";
+    } else if (overMin >= 0 && pastCurfew) {
       detail = s.kid + "'s " + dev.name + " is " + overMin + " min over today's " + dev.dailyLimitMinutes + "-minute limit and past curfew (" + fmtClock(kid.curfewMinutes) + ")";
     } else if (overMin >= 0) {
       detail = s.kid + "'s " + dev.name + " is " + overMin + " min over today's " + dev.dailyLimitMinutes + "-minute limit";
@@ -255,7 +282,7 @@ function buildState(tokenInfo, now) {
   });
   const alerts = [...data.alerts].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50);
   const curfews = data.kids.map(k => ({ kid: k.name, cutoffMinutes: k.curfewMinutes, cutoffLabel: k.curfewMinutes == null ? null : fmtClock(k.curfewMinutes) }));
-  const kidTotals = data.kids.map(k => ({ kid: k.name, todayMinutes: kidTodayMinutes(k.name, now), weekMinutes: kidWeekMinutes(k.name, now) }));
+  const kidTotals = data.kids.map(k => ({ kid: k.name, todayMinutes: kidTodayMinutes(k.name, now), weekMinutes: kidWeekMinutes(k.name, now), dailyTotalLimitMinutes: k.dailyTotalLimitMinutes != null ? k.dailyTotalLimitMinutes : null }));
   const base = { ok: true, now: nowISO(), devices, allDevices, curfews, kidTotals, kids: data.kids.map(k => k.name) };
   if (isParent) {
     return Object.assign(base, { role: 'parent', active: act, recent, alerts });
@@ -361,6 +388,10 @@ const server = http.createServer(async (req, res) => {
         if (usedToday >= dev.dailyLimitMinutes) {
           return sendJSON(res, 200, { ok: false, error: dev.name + "'s " + dev.dailyLimitMinutes + "-minute daily limit is used up" });
         }
+        const kidTotalToday = kidTodayMinutes(kidName, now);
+        if (kid && kid.dailyTotalLimitMinutes != null && kidTotalToday >= kid.dailyTotalLimitMinutes) {
+          return sendJSON(res, 200, { ok: false, error: kidName + "'s " + kid.dailyTotalLimitMinutes + "-minute daily total is used up" });
+        }
         if (kid && kid.curfewMinutes != null && etMinutes(now) >= kid.curfewMinutes) {
           return sendJSON(res, 200, { ok: false, error: 'Past curfew (' + fmtClock(kid.curfewMinutes) + ') — no more devices tonight' });
         }
@@ -400,6 +431,23 @@ const server = http.createServer(async (req, res) => {
         const mins = parseInt(body.minutes, 10);
         if (!dev || !(mins >= 5 && mins <= 600)) return sendJSON(res, 200, { ok: false, error: 'Bad device or limit (5–600 min)' });
         dev.dailyLimitMinutes = mins;
+        saveData();
+        return sendJSON(res, 200, { ok: true });
+      }
+
+      if (pathname === '/api/setkidtotallimit' && req.method === 'POST') {
+        if (info.role !== 'parent') return sendJSON(res, 403, { ok: false, error: 'Parents only' });
+        const kid = data.kids.find(k => k.name === body.kid);
+        if (!kid) return sendJSON(res, 200, { ok: false, error: 'Unknown kid' });
+        // blank/null = no total cap (device limits still apply)
+        if (body.minutes === null || body.minutes === '' || body.minutes === undefined) {
+          kid.dailyTotalLimitMinutes = null;
+          saveData();
+          return sendJSON(res, 200, { ok: true });
+        }
+        const mins = parseInt(body.minutes, 10);
+        if (!(mins >= 5 && mins <= 600)) return sendJSON(res, 200, { ok: false, error: 'Bad limit (5–600 min, or blank for no cap)' });
+        kid.dailyTotalLimitMinutes = mins;
         saveData();
         return sendJSON(res, 200, { ok: true });
       }
