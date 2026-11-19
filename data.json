@@ -1,0 +1,51 @@
+{
+  "devices": [
+    {
+      "id": 1,
+      "name": "PS5",
+      "code": "ps5-c50n",
+      "kind": "console",
+      "dailyLimitMinutes": 60,
+      "archived": false
+    },
+    {
+      "id": 2,
+      "name": "Quest 2",
+      "code": "quest-2-gce7",
+      "kind": "vr",
+      "dailyLimitMinutes": 30,
+      "archived": false
+    },
+    {
+      "id": 3,
+      "name": "Ale's Laptop",
+      "code": "ale-s-laptop-qk2t",
+      "kind": "laptop",
+      "dailyLimitMinutes": 90,
+      "archived": false
+    }
+  ],
+  "kids": [
+    {
+      "name": "Ale",
+      "pinHash": "0ffe1abd1a08215353c233d6e009613e95eec4253832a761af28ff37ac5a150c",
+      "curfewMinutes": 1320
+    },
+    {
+      "name": "Leo",
+      "pinHash": "edee29f882543b956620b26d0ee0e7e950399b1c4222f5de05e06425b4c995e9",
+      "curfewMinutes": 1260
+    },
+    {
+      "name": "Gio",
+      "pinHash": "318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69",
+      "curfewMinutes": null
+    }
+  ],
+  "parentPinHash": "9af15b336e6a9619928537df30b2e6a2376569fcf9d7e773eccede65606529a0",
+  "sessions": [],
+  "alerts": [],
+  "tokens": {},
+  "nextSessionId": 1,
+  "nextAlertId": 1
+}

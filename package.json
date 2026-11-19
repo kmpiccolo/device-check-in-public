@@ -1,0 +1,15 @@
+{
+  "name": "device-check-in-public",
+  "version": "1.1.0",
+  "description": "Device Check-In standalone public web app — kids check devices in/out, parents see limits and alerts. Postgres-backed when DATABASE_URL is set, JSON file fallback otherwise.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
