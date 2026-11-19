@@ -198,11 +198,16 @@ function renderChooser(){
 
 /* ============ kid view ============ */
 function timeLeftMinutes(s){
-  // minutes left before whichever end comes first: daily limit or curfew
+  // minutes left before whichever end comes first: device limit, kid daily total, or curfew
   const now = new Date();
   const dev = state.devices.find(d => d.id === s.deviceId) || state.allDevices.find(d => d.id === s.deviceId);
   if (!dev) return 0;
   let left = dev.dailyLimitMinutes - dev.todayMinutes; // todayMinutes includes this session's elapsed
+  // kid daily total cap across all devices (e.g. Ale 90 min total)
+  const tot = (state.kidTotals || []).find(t => t.kid === s.kid);
+  if (tot && tot.dailyTotalLimitMinutes != null) {
+    left = Math.min(left, tot.dailyTotalLimitMinutes - tot.todayMinutes);
+  }
   const cur = state.curfews.find(c => c.kid === s.kid);
   if (cur && cur.cutoffMinutes != null) {
     const nowMin = (new Date().getHours() * 60 + new Date().getMinutes()); // local; server uses ET — close enough for display, server enforces
@@ -217,7 +222,9 @@ function renderKid(){
   const myActive = (state.active || []).find(s => s.kid === kid);
   const cur = (state.curfews || []).find(c => c.kid === kid);
   let html = '<h1>Hi, ' + esc(kid) + '</h1>';
-  html += '<p class="muted">Today: <b>' + fmtDur(totals.todayMinutes) + '</b> &nbsp;·&nbsp; This week: <b>' + fmtDur(totals.weekMinutes) + '</b>' +
+  html += '<p class="muted">Today: <b>' + fmtDur(totals.todayMinutes) + '</b>' +
+    (totals.dailyTotalLimitMinutes != null ? ' &nbsp;·&nbsp; Daily total limit: <b>' + totals.dailyTotalLimitMinutes + ' min</b>' : '') +
+    ' &nbsp;·&nbsp; This week: <b>' + fmtDur(totals.weekMinutes) + '</b>' +
     (cur && cur.cutoffLabel ? ' &nbsp;·&nbsp; Curfew ' + esc(cur.cutoffLabel) : '') + '</p>';
   html += '<div id="kid-banners"></div>';
   if (myActive) {
@@ -236,6 +243,7 @@ function renderKid(){
   }
   html += '<div class="card"><h2 style="margin-top:0;">Today on your devices</h2><table>' +
     state.devices.map(d => '<tr><td>' + esc(d.name) + '</td><td>' + d.todayMinutes + ' / ' + d.dailyLimitMinutes + ' min</td><td>' + (d.todayMinutes >= d.dailyLimitMinutes ? '<span class="tag over">LIMIT USED</span>' : '') + '</td></tr>').join('') +
+    (totals.dailyTotalLimitMinutes != null ? '<tr><td><b>Total (all devices)</b></td><td><b>' + totals.todayMinutes + ' / ' + totals.dailyTotalLimitMinutes + ' min</b></td><td>' + (totals.todayMinutes >= totals.dailyTotalLimitMinutes ? '<span class="tag over">TOTAL USED</span>' : '') + '</td></tr>' : '') +
     '</table></div>';
   html += '<div class="card"><h2 style="margin-top:0;">Recent sessions</h2>' +
     ((state.recent || []).length ? (state.recent || []).slice(0, 8).map(s => '<div class="alert-item">' + esc(s.deviceName) + ' — ' + fmtDur(s.minutes) + ' <span class="t">· ' + timeAgo(s.startedAt) + ' · ' + esc(s.status) + '</span></div>').join('') : '<p class="muted">No sessions yet.</p>') + '</div>';
@@ -377,12 +385,16 @@ function renderParent(){
     state.allDevices.map(d => '<tr><td>' + esc(d.name) + '</td><td>' + d.todayMinutes + ' / ' + d.dailyLimitMinutes + ' min</td><td>' + (d.todayMinutes >= d.dailyLimitMinutes ? '<span class="tag over">LIMIT USED</span>' : '') + '</td></tr>').join('') +
     '</table></div>';
   html += '<div class="card"><h2 style="margin-top:0;">Time by kid</h2><table><tr><th>Kid</th><th>Today</th><th>Week</th><th></th></tr>' +
-    (state.kidTotals || []).map(t => '<tr><td>' + esc(t.kid) + '</td><td>' + fmtDur(t.todayMinutes) + '</td><td>' + fmtDur(t.weekMinutes) + '</td><td><button class="btn gray small" data-clear-kid="' + esc(t.kid) + '" type="button">Clear time</button></td></tr>').join('') +
+    (state.kidTotals || []).map(t => '<tr><td>' + esc(t.kid) + '</td><td>' + fmtDur(t.todayMinutes) + (t.dailyTotalLimitMinutes != null ? ' / ' + t.dailyTotalLimitMinutes + ' min' : '') + (t.dailyTotalLimitMinutes != null && t.todayMinutes >= t.dailyTotalLimitMinutes ? ' <span class="tag over">TOTAL USED</span>' : '') + '</td><td>' + fmtDur(t.weekMinutes) + '</td><td><button class="btn gray small" data-clear-kid="' + esc(t.kid) + '" type="button">Clear time</button></td></tr>').join('') +
     '</table><button class="btn red" id="clear-all" type="button">Clear all kids’ time</button></div>';
   // limits
   html += '<div class="card"><h2 style="margin-top:0;">Daily limits</h2>' +
     state.allDevices.map(d => '<div class="row"><label for="lim-' + d.id + '">' + esc(d.name) + '</label><span><input type="number" id="lim-' + d.id + '" value="' + d.dailyLimitMinutes + '" min="5" max="600" style="width:90px;display:inline-block;"> min</span></div>').join('') +
     '<button class="btn" id="save-limits" type="button">Save limits</button></div>';
+  // daily total per kid (across all devices)
+  html += '<div class="card"><h2 style="margin-top:0;">Daily total per kid</h2><p class="muted">Max minutes per day across ALL devices combined. Blank = no total cap (device limits still apply).</p>' +
+    (state.kidTotals || []).map(t => '<div class="row"><label for="tot-' + esc(t.kid) + '">' + esc(t.kid) + '</label><span><input type="number" id="tot-' + esc(t.kid) + '" value="' + (t.dailyTotalLimitMinutes != null ? t.dailyTotalLimitMinutes : '') + '" min="5" max="600" placeholder="No cap" style="width:90px;display:inline-block;"> min</span></div>').join('') +
+    '<button class="btn" id="save-totals" type="button">Save total limits</button></div>';
   // parent PIN
   html += '<div class="card"><h2 style="margin-top:0;">Parent PIN</h2><p class="muted">Change the PIN that opens this dashboard.</p>' +
     '<input type="password" id="pin-old" placeholder="Current PIN" inputmode="numeric" maxlength="4">' +
@@ -414,6 +426,16 @@ function renderParent(){
     const jobs = state.allDevices.map(d => {
       const v = parseInt(document.getElementById('lim-' + d.id).value, 10);
       if (v !== d.dailyLimitMinutes) return api('/api/setdailylimit', { method: 'POST', body: JSON.stringify({ deviceId: d.id, minutes: v }) });
+      return Promise.resolve({ ok: true });
+    });
+    Promise.all(jobs).then(() => refresh());
+  };
+  document.getElementById('save-totals').onclick = () => {
+    const jobs = (state.kidTotals || []).map(t => {
+      const el = document.getElementById('tot-' + t.kid);
+      const raw = el ? el.value.trim() : '';
+      const v = raw === '' ? null : parseInt(raw, 10);
+      if (v !== t.dailyTotalLimitMinutes) return api('/api/setkidtotallimit', { method: 'POST', body: JSON.stringify({ kid: t.kid, minutes: v }) });
       return Promise.resolve({ ok: true });
     });
     Promise.all(jobs).then(() => refresh());
